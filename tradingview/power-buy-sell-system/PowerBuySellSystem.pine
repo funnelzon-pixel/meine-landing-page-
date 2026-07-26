@@ -20,17 +20,28 @@ volLen      = input.int(20, "Volume Average Length", group=grpPower)
 powerThresh = input.int(60, "Minimum Power Score to Signal (0-100)", minval=0, maxval=100, group=grpPower)
 
 grpRisk = "Risk Management"
-useOppositeAsSL = input.bool(true, "Use Opposite Signal as Stop Loss (always-in-market)", group=grpRisk)
+useOppositeAsSL = input.bool(false, "Use Opposite Signal as Stop Loss (always-in-market)", tooltip="OFF (recommended): fixed ATR stop with TP1/TP2 gives an asymmetric R:R, so the system can be profitable even below a 50% win rate. ON: stop-and-reverse has no fixed take-profit, so every trade is roughly symmetric and needs a win rate above 50% to be profitable - it is much more sensitive to choppy/whipsaw conditions.", group=grpRisk)
 slAtrMult   = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.1, step=0.1, group=grpRisk)
 rr1         = input.float(1.5, "Take Profit 1 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 rr2         = input.float(3.0, "Take Profit 2 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 
 grpAdx = "ADX DI Filter (5m Safe Logic)"
-signalSource      = input.string("ADX DI Cross", "Signal Trigger", options=["ADX DI Cross", "SuperTrend Flip"], group=grpAdx)
-adxDiLen          = input.int(8, "DI Length", minval=1, group=grpAdx)
-adxSigLen         = input.int(10, "ADX Smoothing Length", minval=1, group=grpAdx)
-useDiSpreadFilter = input.bool(true, "Reward Wider DI Spread in Power Score", group=grpAdx)
-minDiSpread       = input.float(3.0, "DI Spread for Full Score Credit", minval=0.0, step=0.1, group=grpAdx)
+signalSource       = input.string("ADX DI Cross", "Signal Trigger", options=["ADX DI Cross", "SuperTrend Flip"], group=grpAdx)
+adxDiLen           = input.int(8, "DI Length", minval=1, group=grpAdx)
+adxSigLen          = input.int(10, "ADX Smoothing Length", minval=1, group=grpAdx)
+useDiSpreadFilter  = input.bool(true, "Reward Wider DI Spread in Power Score", group=grpAdx)
+minDiSpread        = input.float(3.0, "DI Spread for Full Score Credit", minval=0.0, step=0.1, group=grpAdx)
+requireAdxStrength = input.bool(true, "Require Minimum ADX Strength to Trade", tooltip="Blocks signals while the ADX value is below the threshold, i.e. while the market is choppy/ranging rather than trending. This is the single biggest lever against a low win rate on a DI-cross system.", group=grpAdx)
+adxMinStrength     = input.int(20, "Minimum ADX Strength", minval=1, group=grpAdx)
+
+grpMtf = "Multi-Timeframe Filter"
+useMtfFilter = input.bool(true, "Require Higher-Timeframe Trend Alignment", tooltip="Only takes long signals when a higher timeframe is bullish (and shorts when it's bearish), to avoid fighting the dominant trend.", group=grpMtf)
+mtfTimeframe = input.timeframe("60", "Higher Timeframe", group=grpMtf)
+mtfEmaLen    = input.int(200, "Higher-Timeframe EMA Length", minval=1, group=grpMtf)
+
+grpCooldown = "Signal Cooldown"
+useCooldown  = input.bool(true, "Enable Cooldown Between Signals", tooltip="Blocks a new signal for a minimum number of bars after the previous one, to stop rapid-fire whipsaw entries right after a stop-out.", group=grpCooldown)
+cooldownBars = input.int(5, "Minimum Bars Between Signals", minval=0, group=grpCooldown)
 
 grpDisplay = "Display"
 showDashboard   = input.bool(true, "Show Dashboard", group=grpDisplay)
@@ -110,13 +121,34 @@ bullScore = diScoreBull + (close > emaTrend ? 15.0 : 0.0) + (emaSlopeUp ? 10.0 :
 bearScore = diScoreBear + (close < emaTrend ? 15.0 : 0.0) + (emaSlopeDown ? 10.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 15.0 : 0.0) + (macdBear ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 10.0 : 0.0)
 
 // ============================================================================
+// MARKET REGIME  (avoid trading chop) + HIGHER-TIMEFRAME TREND ALIGNMENT
+// ============================================================================
+adxRegimeOk = not requireAdxStrength or adxSigVal >= adxMinStrength
+
+mtfClose = request.security(syminfo.tickerid, mtfTimeframe, close, lookahead=barmerge.lookahead_off)
+mtfEma   = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, mtfEmaLen), lookahead=barmerge.lookahead_off)
+mtfTrendUp   = mtfClose > mtfEma
+mtfTrendDown = mtfClose < mtfEma
+mtfAlignLong  = not useMtfFilter or mtfTrendUp
+mtfAlignShort = not useMtfFilter or mtfTrendDown
+
+// ============================================================================
+// SIGNAL COOLDOWN  (blocks rapid re-entries right after the previous signal)
+// ============================================================================
+var int lastSignalBar = -100000000
+cooldownOk = not useCooldown or (bar_index - lastSignalBar) >= cooldownBars
+
+// ============================================================================
 // SIGNAL TRIGGER
 // ============================================================================
 triggerUp   = signalSource == "ADX DI Cross" ? adxCrossUp : trendFlipUp
 triggerDown = signalSource == "ADX DI Cross" ? adxCrossDn : trendFlipDown
 
-buySignal  = triggerUp and bullScore >= powerThresh
-sellSignal = triggerDown and bearScore >= powerThresh
+buySignal  = triggerUp and bullScore >= powerThresh and mtfAlignLong and adxRegimeOk and cooldownOk
+sellSignal = triggerDown and bearScore >= powerThresh and mtfAlignShort and adxRegimeOk and cooldownOk
+
+if buySignal or sellSignal
+    lastSignalBar := bar_index
 
 // ============================================================================
 // TRADE STATE
@@ -317,7 +349,7 @@ dashPos = switch dashPosInput
 
 dashBg    = color.new(#000000, 0)
 dashLabel = color.new(#9598a1, 0)
-var table dash = table.new(dashPos, 2, 12, bgcolor=dashBg, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
+var table dash = table.new(dashPos, 2, 13, bgcolor=dashBg, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
 
 if showDashboard and barstate.islast
     winRate       = totalSignals > 0 ? (float(wins) / totalSignals) * 100.0 : 0.0
@@ -328,6 +360,9 @@ if showDashboard and barstate.islast
     openR         = tradeDir == 1 and riskUnit != 0 ? (close - entryPrice) / riskUnit : tradeDir == -1 and riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0
     diTxt         = adxDiLongBias ? "LONG" : adxDiShortBias ? "SHORT" : "NEUTRAL"
     diCol         = adxDiLongBias ? bullColor : adxDiShortBias ? bearColor : neutralColor
+    mtfTxt        = mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat"
+    regimeTxt     = (adxRegimeOk ? "OK " : "CHOP ") + str.tostring(adxSigVal, "#.#")
+    regimeCol     = adxRegimeOk ? bullColor : bearColor
 
     table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(#1e222d, 0), text_size=size.small)
     table.merge_cells(dash, 0, 0, 1, 0)
@@ -364,6 +399,9 @@ if showDashboard and barstate.islast
 
     table.cell(dash, 0, 11, "Avg R / Best Streak", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
     table.cell(dash, 1, 11, str.tostring(avgR, "#.##") + "R / " + str.tostring(bestWinStreak), text_color=color.white, bgcolor=dashBg, text_size=size.small)
+
+    table.cell(dash, 0, 12, "HTF Trend / Regime", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 12, mtfTxt + " / " + regimeTxt, text_color=regimeCol, bgcolor=dashBg, text_size=size.small)
 
 // ============================================================================
 // ALERTS
