@@ -18,6 +18,7 @@ macdSlow    = input.int(26, "MACD Slow Length", group=grpPower)
 macdSig     = input.int(9,  "MACD Signal Length", group=grpPower)
 volLen      = input.int(20, "Volume Average Length", group=grpPower)
 powerThresh = input.int(60, "Minimum Power Score to Signal (0-100)", minval=0, maxval=100, group=grpPower)
+scoreMargin = input.int(15, "Minimum Score Margin vs. Opposite Side", minval=0, maxval=100, tooltip="Requires the winning side's score to beat the other side's score by at least this much, to filter out indecisive/transitional bars where both a bull and bear case look almost equally strong.", group=grpPower)
 
 grpRisk = "Risk Management"
 useOppositeAsSL = input.bool(false, "Use Opposite Signal as Stop Loss (always-in-market)", tooltip="OFF (recommended): fixed ATR stop with TP1/TP2 gives an asymmetric R:R, so the system can be profitable even below a 50% win rate. ON: stop-and-reverse has no fixed take-profit, so every trade is roughly symmetric and needs a win rate above 50% to be profitable - it is much more sensitive to choppy/whipsaw conditions.", group=grpRisk)
@@ -33,6 +34,7 @@ useDiSpreadFilter  = input.bool(true, "Reward Wider DI Spread in Power Score", g
 minDiSpread        = input.float(3.0, "DI Spread for Full Score Credit", minval=0.0, step=0.1, group=grpAdx)
 requireAdxStrength = input.bool(true, "Require Minimum ADX Strength to Trade", tooltip="Blocks signals while the ADX value is below the threshold, i.e. while the market is choppy/ranging rather than trending. This is the single biggest lever against a low win rate on a DI-cross system.", group=grpAdx)
 adxMinStrength     = input.int(20, "Minimum ADX Strength", minval=1, group=grpAdx)
+requireAdxRising   = input.bool(true, "Require ADX Rising", tooltip="Blocks signals while ADX is falling, i.e. while the trend is losing strength rather than building - a falling ADX above the threshold is often a trend that's about to exhaust, right where DI crosses tend to snap back.", group=grpAdx)
 
 grpMtf = "Multi-Timeframe Filter"
 useMtfFilter = input.bool(true, "Require Higher-Timeframe Trend Alignment", tooltip="Only takes long signals when a higher timeframe is bullish (and shorts when it's bearish), to avoid fighting the dominant trend.", group=grpMtf)
@@ -123,7 +125,8 @@ bearScore = diScoreBear + (close < emaTrend ? 15.0 : 0.0) + (emaSlopeDown ? 10.0
 // ============================================================================
 // MARKET REGIME  (avoid trading chop) + HIGHER-TIMEFRAME TREND ALIGNMENT
 // ============================================================================
-adxRegimeOk = not requireAdxStrength or adxSigVal >= adxMinStrength
+adxRising = adxSigVal > adxSigVal[1]
+adxRegimeOk = (not requireAdxStrength or adxSigVal >= adxMinStrength) and (not requireAdxRising or adxRising)
 
 mtfClose = request.security(syminfo.tickerid, mtfTimeframe, close, lookahead=barmerge.lookahead_off)
 mtfEma   = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, mtfEmaLen), lookahead=barmerge.lookahead_off)
@@ -144,8 +147,8 @@ cooldownOk = not useCooldown or (bar_index - lastSignalBar) >= cooldownBars
 triggerUp   = signalSource == "ADX DI Cross" ? adxCrossUp : trendFlipUp
 triggerDown = signalSource == "ADX DI Cross" ? adxCrossDn : trendFlipDown
 
-buySignal  = triggerUp and bullScore >= powerThresh and mtfAlignLong and adxRegimeOk and cooldownOk
-sellSignal = triggerDown and bearScore >= powerThresh and mtfAlignShort and adxRegimeOk and cooldownOk
+buySignal  = triggerUp and bullScore >= powerThresh and (bullScore - bearScore) >= scoreMargin and mtfAlignLong and adxRegimeOk and cooldownOk
+sellSignal = triggerDown and bearScore >= powerThresh and (bearScore - bullScore) >= scoreMargin and mtfAlignShort and adxRegimeOk and cooldownOk
 
 if buySignal or sellSignal
     lastSignalBar := bar_index
@@ -357,11 +360,12 @@ if showDashboard and barstate.islast
     currentDirTxt = tradeDir == 1 ? "LONG" : tradeDir == -1 ? "SHORT" : "FLAT"
     currentDirCol = tradeDir == 1 ? bullColor : tradeDir == -1 ? bearColor : neutralColor
     activeScore   = tradeDir == 1 ? bullScore : tradeDir == -1 ? bearScore : math.max(bullScore, bearScore)
+    scoreDelta    = math.abs(bullScore - bearScore)
     openR         = tradeDir == 1 and riskUnit != 0 ? (close - entryPrice) / riskUnit : tradeDir == -1 and riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0
     diTxt         = adxDiLongBias ? "LONG" : adxDiShortBias ? "SHORT" : "NEUTRAL"
     diCol         = adxDiLongBias ? bullColor : adxDiShortBias ? bearColor : neutralColor
     mtfTxt        = mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat"
-    regimeTxt     = (adxRegimeOk ? "OK " : "CHOP ") + str.tostring(adxSigVal, "#.#")
+    regimeTxt     = (adxRegimeOk ? "OK " : "CHOP ") + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓")
     regimeCol     = adxRegimeOk ? bullColor : bearColor
 
     table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(#1e222d, 0), text_size=size.small)
@@ -371,7 +375,7 @@ if showDashboard and barstate.islast
     table.cell(dash, 1, 1, currentDirTxt, text_color=currentDirCol, bgcolor=dashBg, text_size=size.small)
 
     table.cell(dash, 0, 2, "Power Score", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
-    table.cell(dash, 1, 2, str.tostring(activeScore, "#.#") + "%", text_color=currentDirCol, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(activeScore, "#.#") + "% (Δ" + str.tostring(scoreDelta, "#.#") + ")", text_color=currentDirCol, bgcolor=dashBg, text_size=size.small)
 
     table.cell(dash, 0, 3, "ADX DI Bias", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
     table.cell(dash, 1, 3, diTxt, text_color=diCol, bgcolor=dashBg, text_size=size.small)
