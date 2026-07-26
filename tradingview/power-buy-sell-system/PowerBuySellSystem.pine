@@ -26,11 +26,11 @@ rr1         = input.float(1.5, "Take Profit 1 (R Multiple)", minval=0.1, step=0.
 rr2         = input.float(3.0, "Take Profit 2 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 
 grpAdx = "ADX DI Filter (5m Safe Logic)"
-useAdxFilter      = input.bool(true, "Use ADX DI+/DI- Direction as Signal Filter", group=grpAdx)
+signalSource      = input.string("ADX DI Cross", "Signal Trigger", options=["ADX DI Cross", "SuperTrend Flip"], group=grpAdx)
 adxDiLen          = input.int(8, "DI Length", minval=1, group=grpAdx)
 adxSigLen         = input.int(10, "ADX Smoothing Length", minval=1, group=grpAdx)
-useDiSpreadFilter = input.bool(true, "Require Minimum DI Spread (noise filter)", group=grpAdx)
-minDiSpread       = input.float(3.0, "Minimum DI+/DI- Spread", minval=0.0, step=0.1, group=grpAdx)
+useDiSpreadFilter = input.bool(true, "Reward Wider DI Spread in Power Score", group=grpAdx)
+minDiSpread       = input.float(3.0, "DI Spread for Full Score Credit", minval=0.0, step=0.1, group=grpAdx)
 
 grpDisplay = "Display"
 showDashboard   = input.bool(true, "Show Dashboard", group=grpDisplay)
@@ -56,27 +56,9 @@ emaSlopeUp   = emaTrend > emaTrend[3]
 emaSlopeDown = emaTrend < emaTrend[3]
 
 // ============================================================================
-// POWER SCORE  (0-100 confluence score: trend + momentum + volume + volatility)
-// ============================================================================
-rsiVal = ta.rsi(close, rsiLen)
-[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSig)
-macdBull = macdHist > 0 and macdHist > macdHist[1]
-macdBear = macdHist < 0 and macdHist < macdHist[1]
-
-volAvg   = ta.sma(volume, volLen)
-volRatio = volAvg > 0 ? volume / volAvg : 1.0
-volExpand = volRatio >= 1.2
-
-atrAvg     = ta.sma(atrVal, volLen)
-volaExpand = atrVal > atrAvg
-
-bullScore = (trendUp ? 30.0 : 0.0) + (close > emaTrend ? 10.0 : 0.0) + (emaSlopeUp ? 10.0 : 0.0) + ((rsiVal > 50 and rsiVal < rsiOB) ? 15.0 : 0.0) + (macdBull ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
-bearScore = (trendDown ? 30.0 : 0.0) + (close < emaTrend ? 10.0 : 0.0) + (emaSlopeDown ? 10.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 15.0 : 0.0) + (macdBear ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
-
-// ============================================================================
-// ADX DI+/DI- FILTER  (Wilder DMI, ported from "ADX 5m+ Safe" logic)
-// +DI crosses above -DI and stays above  -> bullish DI regime (long bias)
-// -DI crosses above +DI and stays above  -> bearish DI regime (short bias)
+// ADX DI+/DI- ENGINE  (Wilder DMI, ported from "ADX 5m+ Safe" logic)
+// Fires the instant +DI crosses above -DI (long) or -DI crosses above +DI
+// (short) - no waiting for the slower SuperTrend to flip.
 // ============================================================================
 f_dirMovPBS(_len) =>
     _up = ta.change(high)
@@ -95,13 +77,46 @@ f_adxPBS(_plus, _minus, _sigLen) =>
 [adxDiPlus, adxDiMinus] = f_dirMovPBS(adxDiLen)
 adxSigVal = f_adxPBS(adxDiPlus, adxDiMinus, adxSigLen)
 
+adxCrossUp = ta.crossover(adxDiPlus, adxDiMinus)
+adxCrossDn = ta.crossover(adxDiMinus, adxDiPlus)
+
 adxSpreadBull = adxDiPlus - adxDiMinus
 adxSpreadBear = adxDiMinus - adxDiPlus
-adxDiLongBias  = useDiSpreadFilter ? (adxDiPlus > adxDiMinus and adxSpreadBull >= minDiSpread) : adxDiPlus > adxDiMinus
-adxDiShortBias = useDiSpreadFilter ? (adxDiMinus > adxDiPlus and adxSpreadBear >= minDiSpread) : adxDiMinus > adxDiPlus
+adxDiLongBias  = adxDiPlus > adxDiMinus
+adxDiShortBias = adxDiMinus > adxDiPlus
 
-buySignal  = trendFlipUp and bullScore >= powerThresh and (not useAdxFilter or adxDiLongBias)
-sellSignal = trendFlipDown and bearScore >= powerThresh and (not useAdxFilter or adxDiShortBias)
+// ============================================================================
+// POWER SCORE  (0-100 confluence score: DI direction + trend + momentum + volume)
+// DI direction always earns some credit right at the cross (10 pts) and full
+// credit once the spread widens (20 pts), so an early cross is never blocked
+// by its own filter.
+// ============================================================================
+rsiVal = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSig)
+macdBull = macdHist > 0 and macdHist > macdHist[1]
+macdBear = macdHist < 0 and macdHist < macdHist[1]
+
+volAvg   = ta.sma(volume, volLen)
+volRatio = volAvg > 0 ? volume / volAvg : 1.0
+volExpand = volRatio >= 1.2
+
+atrAvg     = ta.sma(atrVal, volLen)
+volaExpand = atrVal > atrAvg
+
+diScoreBull = adxDiLongBias ? ((useDiSpreadFilter and adxSpreadBull < minDiSpread) ? 10.0 : 20.0) : 0.0
+diScoreBear = adxDiShortBias ? ((useDiSpreadFilter and adxSpreadBear < minDiSpread) ? 10.0 : 20.0) : 0.0
+
+bullScore = diScoreBull + (close > emaTrend ? 15.0 : 0.0) + (emaSlopeUp ? 10.0 : 0.0) + ((rsiVal > 50 and rsiVal < rsiOB) ? 15.0 : 0.0) + (macdBull ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 10.0 : 0.0)
+bearScore = diScoreBear + (close < emaTrend ? 15.0 : 0.0) + (emaSlopeDown ? 10.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 15.0 : 0.0) + (macdBear ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 10.0 : 0.0)
+
+// ============================================================================
+// SIGNAL TRIGGER
+// ============================================================================
+triggerUp   = signalSource == "ADX DI Cross" ? adxCrossUp : trendFlipUp
+triggerDown = signalSource == "ADX DI Cross" ? adxCrossDn : trendFlipDown
+
+buySignal  = triggerUp and bullScore >= powerThresh
+sellSignal = triggerDown and bearScore >= powerThresh
 
 // ============================================================================
 // TRADE STATE
