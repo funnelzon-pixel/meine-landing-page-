@@ -1,0 +1,309 @@
+//@version=6
+indicator("Power Buy and Sell System", shorttitle="Power B/S System", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+grpTrend = "Trend Engine"
+stAtrPeriod = input.int(10, "SuperTrend ATR Period", minval=1, group=grpTrend)
+stAtrMult   = input.float(3.0, "SuperTrend ATR Multiplier", minval=0.1, step=0.1, group=grpTrend)
+trendEmaLen = input.int(200, "Trend Filter EMA Length", minval=1, group=grpTrend)
+
+grpPower = "Power Score"
+rsiLen      = input.int(14, "RSI Length", minval=1, group=grpPower)
+rsiOB       = input.int(70, "RSI Overbought", group=grpPower)
+rsiOS       = input.int(30, "RSI Oversold", group=grpPower)
+macdFast    = input.int(12, "MACD Fast Length", group=grpPower)
+macdSlow    = input.int(26, "MACD Slow Length", group=grpPower)
+macdSig     = input.int(9,  "MACD Signal Length", group=grpPower)
+volLen      = input.int(20, "Volume Average Length", group=grpPower)
+powerThresh = input.int(60, "Minimum Power Score to Signal (0-100)", minval=0, maxval=100, group=grpPower)
+
+grpRisk = "Risk Management"
+useOppositeAsSL = input.bool(true, "Use Opposite Signal as Stop Loss (always-in-market)", group=grpRisk)
+slAtrMult   = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.1, step=0.1, group=grpRisk)
+rr1         = input.float(1.5, "Take Profit 1 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
+rr2         = input.float(3.0, "Take Profit 2 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
+
+grpDisplay = "Display"
+showDashboard   = input.bool(true, "Show Dashboard", group=grpDisplay)
+dashPosInput    = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDisplay)
+showTradeLevels = input.bool(true, "Show Entry / SL / TP Lines", group=grpDisplay)
+showBarColors   = input.bool(false, "Color Bars by Trend", group=grpDisplay)
+bullColor       = input.color(color.new(#089981, 0), "Bullish Color", group=grpDisplay)
+bearColor       = input.color(color.new(#f23645, 0), "Bearish Color", group=grpDisplay)
+neutralColor    = input.color(color.new(#787b86, 0), "Neutral / SL Color", group=grpDisplay)
+
+// ============================================================================
+// TREND ENGINE
+// ============================================================================
+atrVal = ta.atr(stAtrPeriod)
+[st, stDir] = ta.supertrend(stAtrMult, stAtrPeriod)
+trendUp   = stDir < 0
+trendDown = stDir > 0
+trendFlipUp   = trendUp and not trendUp[1]
+trendFlipDown = trendDown and not trendDown[1]
+
+emaTrend     = ta.ema(close, trendEmaLen)
+emaSlopeUp   = emaTrend > emaTrend[3]
+emaSlopeDown = emaTrend < emaTrend[3]
+
+// ============================================================================
+// POWER SCORE  (0-100 confluence score: trend + momentum + volume + volatility)
+// ============================================================================
+rsiVal = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSig)
+macdBull = macdHist > 0 and macdHist > macdHist[1]
+macdBear = macdHist < 0 and macdHist < macdHist[1]
+
+volAvg   = ta.sma(volume, volLen)
+volRatio = volAvg > 0 ? volume / volAvg : 1.0
+volExpand = volRatio >= 1.2
+
+atrAvg     = ta.sma(atrVal, volLen)
+volaExpand = atrVal > atrAvg
+
+bullScore = (trendUp ? 30.0 : 0.0) + (close > emaTrend ? 10.0 : 0.0) + (emaSlopeUp ? 10.0 : 0.0) + ((rsiVal > 50 and rsiVal < rsiOB) ? 15.0 : 0.0) + (macdBull ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
+bearScore = (trendDown ? 30.0 : 0.0) + (close < emaTrend ? 10.0 : 0.0) + (emaSlopeDown ? 10.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 15.0 : 0.0) + (macdBear ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
+
+buySignal  = trendFlipUp and bullScore >= powerThresh
+sellSignal = trendFlipDown and bearScore >= powerThresh
+
+// ============================================================================
+// TRADE STATE
+// ============================================================================
+var int   tradeDir   = 0     // 1 = long, -1 = short, 0 = flat
+var float entryPrice = na
+var float slPrice    = na
+var float tp1Price   = na
+var float tp2Price   = na
+var float riskUnit   = na
+var bool  tp1Hit      = false
+var float bankedR     = 0.0
+
+var int   totalSignals    = 0
+var int   wins            = 0
+var int   losses          = 0
+var float sumR            = 0.0
+var int   winStreak       = 0
+var int   loseStreak      = 0
+var int   bestWinStreak   = 0
+var int   worstLoseStreak = 0
+
+var line entryLine = na
+var line slLine    = na
+var line tp1Line   = na
+var line tp2Line   = na
+var label entryLbl = na
+var label slLbl    = na
+var label tp1Lbl   = na
+var label tp2Lbl   = na
+
+recordResult(rMultiple) =>
+    totalSignals := totalSignals + 1
+    sumR := sumR + rMultiple
+    if rMultiple > 0
+        wins := wins + 1
+        winStreak := winStreak + 1
+        loseStreak := 0
+        bestWinStreak := math.max(bestWinStreak, winStreak)
+    else
+        losses := losses + 1
+        loseStreak := loseStreak + 1
+        winStreak := 0
+        worstLoseStreak := math.max(worstLoseStreak, loseStreak)
+
+renewLabel(oldId, x, y, txt, col) =>
+    if not na(oldId)
+        label.delete(oldId)
+    label.new(x, y, txt, style=label.style_label_left, color=col, textcolor=color.white, size=size.small)
+
+openLongTrade() =>
+    tradeDir   := 1
+    entryPrice := close
+    riskUnit   := atrVal * slAtrMult
+    slPrice    := useOppositeAsSL ? na : entryPrice - riskUnit
+    tp1Price   := entryPrice + riskUnit * rr1
+    tp2Price   := entryPrice + riskUnit * rr2
+    tp1Hit     := false
+    bankedR    := 0.0
+    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=neutralColor, style=line.style_dotted, width=1)
+    tp1Line   := line.new(bar_index, tp1Price, bar_index, tp1Price, color=bullColor, style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bullColor, style=line.style_solid, width=2)
+    slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
+    if showTradeLevels
+        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
+        tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bullColor)
+        tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bullColor)
+        if not useOppositeAsSL
+            slLbl := renewLabel(slLbl, bar_index, slPrice, "SL  " + str.tostring(slPrice, format.mintick), neutralColor)
+
+openShortTrade() =>
+    tradeDir   := -1
+    entryPrice := close
+    riskUnit   := atrVal * slAtrMult
+    slPrice    := useOppositeAsSL ? na : entryPrice + riskUnit
+    tp1Price   := entryPrice - riskUnit * rr1
+    tp2Price   := entryPrice - riskUnit * rr2
+    tp1Hit     := false
+    bankedR    := 0.0
+    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=neutralColor, style=line.style_dotted, width=1)
+    tp1Line   := line.new(bar_index, tp1Price, bar_index, tp1Price, color=bearColor, style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bearColor, style=line.style_solid, width=2)
+    slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
+    if showTradeLevels
+        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
+        tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bearColor)
+        tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bearColor)
+        if not useOppositeAsSL
+            slLbl := renewLabel(slLbl, bar_index, slPrice, "SL  " + str.tostring(slPrice, format.mintick), neutralColor)
+
+// ============================================================================
+// PER-BAR TRADE MANAGEMENT
+// ============================================================================
+tpHitEvent = false
+slHitEvent = false
+
+// Mode A: always-in-market, stop-and-reverse. Lines are informational only.
+if useOppositeAsSL and tradeDir != 0
+    line.set_x2(entryLine, bar_index)
+    line.set_x2(tp1Line, bar_index)
+    line.set_x2(tp2Line, bar_index)
+
+// Mode B: fixed SL / partial TP1 (moves stop to breakeven) / TP2.
+if not useOppositeAsSL and tradeDir != 0
+    line.set_x2(entryLine, bar_index)
+    line.set_x2(tp1Line, bar_index)
+    line.set_x2(tp2Line, bar_index)
+    if not na(slLine)
+        line.set_x2(slLine, bar_index)
+
+    if tradeDir == 1
+        if not tp1Hit and high >= tp1Price
+            tp1Hit  := true
+            bankedR := rr1 * 0.5
+            slPrice := entryPrice
+            if not na(slLine)
+                line.delete(slLine)
+            slLine := line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
+            if showTradeLevels
+                slLbl := renewLabel(slLbl, bar_index, slPrice, "SL → BE", neutralColor)
+        else if tp1Hit and high >= tp2Price
+            recordResult(bankedR + rr2 * 0.5)
+            tpHitEvent := true
+            tradeDir   := 0
+        else if low <= slPrice
+            recordResult(tp1Hit ? bankedR : -1.0)
+            slHitEvent := true
+            tradeDir   := 0
+    else if tradeDir == -1
+        if not tp1Hit and low <= tp1Price
+            tp1Hit  := true
+            bankedR := rr1 * 0.5
+            slPrice := entryPrice
+            if not na(slLine)
+                line.delete(slLine)
+            slLine := line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
+            if showTradeLevels
+                slLbl := renewLabel(slLbl, bar_index, slPrice, "SL → BE", neutralColor)
+        else if tp1Hit and low <= tp2Price
+            recordResult(bankedR + rr2 * 0.5)
+            tpHitEvent := true
+            tradeDir   := 0
+        else if high >= slPrice
+            recordResult(tp1Hit ? bankedR : -1.0)
+            slHitEvent := true
+            tradeDir   := 0
+
+// New signals
+if buySignal
+    if useOppositeAsSL
+        if tradeDir == -1
+            recordResult(riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0)
+        openLongTrade()
+    else
+        if tradeDir == 0
+            openLongTrade()
+
+if sellSignal
+    if useOppositeAsSL
+        if tradeDir == 1
+            recordResult(riskUnit != 0 ? (close - entryPrice) / riskUnit : 0.0)
+        openShortTrade()
+    else
+        if tradeDir == 0
+            openShortTrade()
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+plot(trendUp ? st : na, title="Uptrend Support", color=bullColor, style=plot.style_linebr, linewidth=2)
+plot(trendDown ? st : na, title="Downtrend Resistance", color=bearColor, style=plot.style_linebr, linewidth=2)
+plot(emaTrend, title="Trend EMA", color=color.new(color.yellow, 40), linewidth=1)
+
+bgcolor(trendUp ? color.new(bullColor, 92) : trendDown ? color.new(bearColor, 92) : na, title="Trend Background")
+barcolor(showBarColors ? (trendUp ? bullColor : trendDown ? bearColor : na) : na)
+
+plotshape(buySignal, title="Buy Signal", style=shape.labelup, location=location.belowbar, color=bullColor, text="BUY", textcolor=color.white, size=size.small)
+plotshape(sellSignal, title="Sell Signal", style=shape.labeldown, location=location.abovebar, color=bearColor, text="SELL", textcolor=color.white, size=size.small)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+dashPos = switch dashPosInput
+    "Top Right"    => position.top_right
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+
+var table dash = table.new(dashPos, 2, 11, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
+
+if showDashboard and barstate.islast
+    winRate       = totalSignals > 0 ? (wins / totalSignals) * 100.0 : 0.0
+    avgR          = totalSignals > 0 ? sumR / totalSignals : 0.0
+    currentDirTxt = tradeDir == 1 ? "LONG" : tradeDir == -1 ? "SHORT" : "FLAT"
+    currentDirCol = tradeDir == 1 ? bullColor : tradeDir == -1 ? bearColor : neutralColor
+    activeScore   = tradeDir == 1 ? bullScore : tradeDir == -1 ? bearScore : math.max(bullScore, bearScore)
+    openR         = tradeDir == 1 and riskUnit != 0 ? (close - entryPrice) / riskUnit : tradeDir == -1 and riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0
+
+    table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.merge_cells(dash, 0, 0, 1, 0)
+
+    table.cell(dash, 0, 1, "Status", text_color=color.gray, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, currentDirTxt, text_color=currentDirCol, text_size=size.small)
+
+    table.cell(dash, 0, 2, "Power Score", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(activeScore, "#.#") + "%", text_color=currentDirCol, text_size=size.small)
+
+    table.cell(dash, 0, 3, "Entry", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 3, tradeDir != 0 ? str.tostring(entryPrice, format.mintick) : "—", text_size=size.small)
+
+    table.cell(dash, 0, 4, "Stop Loss", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 4, tradeDir == 0 ? "—" : (useOppositeAsSL ? "Opposite Signal" : str.tostring(slPrice, format.mintick)), text_size=size.small)
+
+    table.cell(dash, 0, 5, "Take Profit 1", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 5, tradeDir != 0 ? str.tostring(tp1Price, format.mintick) : "—", text_size=size.small)
+
+    table.cell(dash, 0, 6, "Take Profit 2", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 6, tradeDir != 0 ? str.tostring(tp2Price, format.mintick) : "—", text_size=size.small)
+
+    table.cell(dash, 0, 7, "Open P/L (R)", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 7, tradeDir != 0 ? str.tostring(openR, "#.##") + "R" : "—", text_color=openR >= 0 ? bullColor : bearColor, text_size=size.small)
+
+    table.cell(dash, 0, 8, "Signals / Win Rate", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 8, str.tostring(totalSignals) + " / " + str.tostring(winRate, "#.#") + "%", text_size=size.small)
+
+    table.cell(dash, 0, 9, "Wins / Losses", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 9, str.tostring(wins) + " / " + str.tostring(losses), text_size=size.small)
+
+    table.cell(dash, 0, 10, "Avg R / Best Streak", text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 10, str.tostring(avgR, "#.##") + "R / " + str.tostring(bestWinStreak), text_size=size.small)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(buySignal, title="Power Buy Signal", message="Power Buy and Sell System: BUY signal on {{ticker}} @ {{close}}")
+alertcondition(sellSignal, title="Power Sell Signal", message="Power Buy and Sell System: SELL signal on {{ticker}} @ {{close}}")
+alertcondition(tpHitEvent, title="Power Take Profit Hit", message="Power Buy and Sell System: Take Profit hit on {{ticker}} @ {{close}}")
+alertcondition(slHitEvent, title="Power Stop Loss Hit", message="Power Buy and Sell System: Stop Loss hit on {{ticker}} @ {{close}}")
