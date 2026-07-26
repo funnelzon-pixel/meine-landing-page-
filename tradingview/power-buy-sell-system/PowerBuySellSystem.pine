@@ -18,7 +18,7 @@ macdSlow    = input.int(26, "MACD Slow Length", group=grpPower)
 macdSig     = input.int(9,  "MACD Signal Length", group=grpPower)
 volLen      = input.int(20, "Volume Average Length", group=grpPower)
 powerThresh = input.int(60, "Minimum Power Score to Signal (0-100)", minval=0, maxval=100, group=grpPower)
-scoreMargin = input.int(15, "Minimum Score Margin vs. Opposite Side", minval=0, maxval=100, tooltip="Requires the winning side's score to beat the other side's score by at least this much, to filter out indecisive/transitional bars where both a bull and bear case look almost equally strong.", group=grpPower)
+scoreMargin = input.int(8, "Minimum Score Margin vs. Opposite Side", minval=0, maxval=100, tooltip="Requires the winning side's score to beat the other side's score by at least this much, to filter out indecisive/transitional bars where both a bull and bear case look almost equally strong.", group=grpPower)
 
 grpRisk = "Risk Management"
 useOppositeAsSL = input.bool(false, "Use Opposite Signal as Stop Loss (always-in-market)", tooltip="OFF (recommended): fixed ATR stop with TP1/TP2 gives an asymmetric R:R, so the system can be profitable even below a 50% win rate. ON: stop-and-reverse has no fixed take-profit, so every trade is roughly symmetric and needs a win rate above 50% to be profitable - it is much more sensitive to choppy/whipsaw conditions.", group=grpRisk)
@@ -33,17 +33,17 @@ adxSigLen          = input.int(10, "ADX Smoothing Length", minval=1, group=grpAd
 useDiSpreadFilter  = input.bool(true, "Reward Wider DI Spread in Power Score", group=grpAdx)
 minDiSpread        = input.float(3.0, "DI Spread for Full Score Credit", minval=0.0, step=0.1, group=grpAdx)
 requireAdxStrength = input.bool(true, "Require Minimum ADX Strength to Trade", tooltip="Blocks signals while the ADX value is below the threshold, i.e. while the market is choppy/ranging rather than trending. This is the single biggest lever against a low win rate on a DI-cross system.", group=grpAdx)
-adxMinStrength     = input.int(20, "Minimum ADX Strength", minval=1, group=grpAdx)
-requireAdxRising   = input.bool(true, "Require ADX Rising", tooltip="Blocks signals while ADX is falling, i.e. while the trend is losing strength rather than building - a falling ADX above the threshold is often a trend that's about to exhaust, right where DI crosses tend to snap back.", group=grpAdx)
+adxMinStrength     = input.int(18, "Minimum ADX Strength", minval=1, group=grpAdx)
+requireAdxRising   = input.bool(false, "Require ADX Rising", tooltip="Blocks signals while ADX is falling over the last few bars. OFF by default: combined with the other filters this was blocking almost every signal, since ADX naturally wiggles bar-to-bar even inside a healthy trend. Turn on only if you still see too many signals after tuning the other filters.", group=grpAdx)
 
 grpMtf = "Multi-Timeframe Filter"
-useMtfFilter = input.bool(true, "Require Higher-Timeframe Trend Alignment", tooltip="Only takes long signals when a higher timeframe is bullish (and shorts when it's bearish), to avoid fighting the dominant trend.", group=grpMtf)
-mtfTimeframe = input.timeframe("60", "Higher Timeframe", group=grpMtf)
-mtfEmaLen    = input.int(200, "Higher-Timeframe EMA Length", minval=1, group=grpMtf)
+useMtfFilter = input.bool(true, "Require Higher-Timeframe Trend Alignment", tooltip="Only takes long signals when a higher timeframe is bullish (and shorts when it's bearish), to avoid fighting the dominant trend. Keep this timeframe reasonably close to your chart's timeframe - too high (e.g. 1h on a 1m chart) barely changes for hours and can silently block one whole direction for a long time.", group=grpMtf)
+mtfTimeframe = input.timeframe("15", "Higher Timeframe", group=grpMtf)
+mtfEmaLen    = input.int(50, "Higher-Timeframe EMA Length", minval=1, group=grpMtf)
 
 grpCooldown = "Signal Cooldown"
 useCooldown  = input.bool(true, "Enable Cooldown Between Signals", tooltip="Blocks a new signal for a minimum number of bars after the previous one, to stop rapid-fire whipsaw entries right after a stop-out.", group=grpCooldown)
-cooldownBars = input.int(5, "Minimum Bars Between Signals", minval=0, group=grpCooldown)
+cooldownBars = input.int(3, "Minimum Bars Between Signals", minval=0, group=grpCooldown)
 
 grpDisplay = "Display"
 showDashboard   = input.bool(true, "Show Dashboard", group=grpDisplay)
@@ -125,7 +125,7 @@ bearScore = diScoreBear + (close < emaTrend ? 15.0 : 0.0) + (emaSlopeDown ? 10.0
 // ============================================================================
 // MARKET REGIME  (avoid trading chop) + HIGHER-TIMEFRAME TREND ALIGNMENT
 // ============================================================================
-adxRising = adxSigVal > adxSigVal[1]
+adxRising = adxSigVal > adxSigVal[3]
 adxRegimeOk = (not requireAdxStrength or adxSigVal >= adxMinStrength) and (not requireAdxRising or adxRising)
 
 mtfClose = request.security(syminfo.tickerid, mtfTimeframe, close, lookahead=barmerge.lookahead_off)
@@ -207,6 +207,8 @@ if useOppositeAsSL and tradeDir != 0
     line.set_x2(tp2Line, bar_index)
 
 // Mode B: fixed SL / partial TP1 (moves stop to breakeven) / TP2.
+closeTradeB = false
+
 if not useOppositeAsSL and tradeDir != 0
     line.set_x2(entryLine, bar_index)
     line.set_x2(tp1Line, bar_index)
@@ -227,11 +229,11 @@ if not useOppositeAsSL and tradeDir != 0
         else if tp1Hit and high >= tp2Price
             closedR    := bankedR + rr2 * 0.5
             tpHitEvent := true
-            tradeDir   := 0
+            closeTradeB := true
         else if low <= slPrice
             closedR    := tp1Hit ? bankedR : -1.0
             slHitEvent := true
-            tradeDir   := 0
+            closeTradeB := true
     else if tradeDir == -1
         if not tp1Hit and low <= tp1Price
             tp1Hit  := true
@@ -245,11 +247,29 @@ if not useOppositeAsSL and tradeDir != 0
         else if tp1Hit and low <= tp2Price
             closedR    := bankedR + rr2 * 0.5
             tpHitEvent := true
-            tradeDir   := 0
+            closeTradeB := true
         else if high >= slPrice
             closedR    := tp1Hit ? bankedR : -1.0
             slHitEvent := true
-            tradeDir   := 0
+            closeTradeB := true
+
+// Once a Mode B trade closes, drop it back to flat and clear its ENTRY/TP/SL
+// labels immediately instead of leaving them stranded on the chart until the
+// next trade happens to open.
+if closeTradeB
+    tradeDir := 0
+    if not na(entryLbl)
+        label.delete(entryLbl)
+        entryLbl := na
+    if not na(tp1Lbl)
+        label.delete(tp1Lbl)
+        tp1Lbl := na
+    if not na(tp2Lbl)
+        label.delete(tp2Lbl)
+        tp2Lbl := na
+    if not na(slLbl)
+        label.delete(slLbl)
+        slLbl := na
 
 // New signals decide whether a trade opens/reverses this bar
 if buySignal
