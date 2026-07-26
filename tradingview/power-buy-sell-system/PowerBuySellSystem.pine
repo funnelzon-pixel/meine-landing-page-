@@ -320,7 +320,8 @@ if openLong
     tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bullColor, style=line.style_solid, width=2)
     slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
     if showTradeLevels
-        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
+        entryDiagTxt = "ENTRY  " + str.tostring(entryPrice, format.mintick) + "\nADX " + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓") + " | DI+" + str.tostring(adxDiPlus, "#.#") + "/-" + str.tostring(adxDiMinus, "#.#") + " | MTF " + (mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat")
+        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, entryDiagTxt, neutralColor)
         tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bullColor)
         tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bullColor)
         if not useOppositeAsSL
@@ -341,7 +342,8 @@ if openShort
     tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bearColor, style=line.style_solid, width=2)
     slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
     if showTradeLevels
-        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
+        entryDiagTxt = "ENTRY  " + str.tostring(entryPrice, format.mintick) + "\nADX " + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓") + " | DI+" + str.tostring(adxDiPlus, "#.#") + "/-" + str.tostring(adxDiMinus, "#.#") + " | MTF " + (mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat")
+        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, entryDiagTxt, neutralColor)
         tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bearColor)
         tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bearColor)
         if not useOppositeAsSL
