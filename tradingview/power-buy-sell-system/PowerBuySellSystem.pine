@@ -99,70 +99,22 @@ var label slLbl    = na
 var label tp1Lbl   = na
 var label tp2Lbl   = na
 
-recordResult(rMultiple) =>
-    totalSignals := totalSignals + 1
-    sumR := sumR + rMultiple
-    if rMultiple > 0
-        wins := wins + 1
-        winStreak := winStreak + 1
-        loseStreak := 0
-        bestWinStreak := math.max(bestWinStreak, winStreak)
-    else
-        losses := losses + 1
-        loseStreak := loseStreak + 1
-        winStreak := 0
-        worstLoseStreak := math.max(worstLoseStreak, loseStreak)
-
+// Pine functions cannot reassign variables declared outside their own scope,
+// so label recreation is the only piece kept as a function (it only returns
+// a value); all trade/state mutation below runs in top-level if-blocks instead.
 renewLabel(oldId, x, y, txt, col) =>
     if not na(oldId)
         label.delete(oldId)
     label.new(x, y, txt, style=label.style_label_left, color=col, textcolor=color.white, size=size.small)
-
-openLongTrade() =>
-    tradeDir   := 1
-    entryPrice := close
-    riskUnit   := atrVal * slAtrMult
-    slPrice    := useOppositeAsSL ? na : entryPrice - riskUnit
-    tp1Price   := entryPrice + riskUnit * rr1
-    tp2Price   := entryPrice + riskUnit * rr2
-    tp1Hit     := false
-    bankedR    := 0.0
-    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=neutralColor, style=line.style_dotted, width=1)
-    tp1Line   := line.new(bar_index, tp1Price, bar_index, tp1Price, color=bullColor, style=line.style_dashed, width=1)
-    tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bullColor, style=line.style_solid, width=2)
-    slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
-    if showTradeLevels
-        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
-        tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bullColor)
-        tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bullColor)
-        if not useOppositeAsSL
-            slLbl := renewLabel(slLbl, bar_index, slPrice, "SL  " + str.tostring(slPrice, format.mintick), neutralColor)
-
-openShortTrade() =>
-    tradeDir   := -1
-    entryPrice := close
-    riskUnit   := atrVal * slAtrMult
-    slPrice    := useOppositeAsSL ? na : entryPrice + riskUnit
-    tp1Price   := entryPrice - riskUnit * rr1
-    tp2Price   := entryPrice - riskUnit * rr2
-    tp1Hit     := false
-    bankedR    := 0.0
-    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=neutralColor, style=line.style_dotted, width=1)
-    tp1Line   := line.new(bar_index, tp1Price, bar_index, tp1Price, color=bearColor, style=line.style_dashed, width=1)
-    tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bearColor, style=line.style_solid, width=2)
-    slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
-    if showTradeLevels
-        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
-        tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bearColor)
-        tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bearColor)
-        if not useOppositeAsSL
-            slLbl := renewLabel(slLbl, bar_index, slPrice, "SL  " + str.tostring(slPrice, format.mintick), neutralColor)
 
 // ============================================================================
 // PER-BAR TRADE MANAGEMENT
 // ============================================================================
 tpHitEvent = false
 slHitEvent = false
+float closedR   = na
+bool  openLong  = false
+bool  openShort = false
 
 // Mode A: always-in-market, stop-and-reverse. Lines are informational only.
 if useOppositeAsSL and tradeDir != 0
@@ -189,11 +141,11 @@ if not useOppositeAsSL and tradeDir != 0
             if showTradeLevels
                 slLbl := renewLabel(slLbl, bar_index, slPrice, "SL → BE", neutralColor)
         else if tp1Hit and high >= tp2Price
-            recordResult(bankedR + rr2 * 0.5)
+            closedR    := bankedR + rr2 * 0.5
             tpHitEvent := true
             tradeDir   := 0
         else if low <= slPrice
-            recordResult(tp1Hit ? bankedR : -1.0)
+            closedR    := tp1Hit ? bankedR : -1.0
             slHitEvent := true
             tradeDir   := 0
     else if tradeDir == -1
@@ -207,32 +159,89 @@ if not useOppositeAsSL and tradeDir != 0
             if showTradeLevels
                 slLbl := renewLabel(slLbl, bar_index, slPrice, "SL → BE", neutralColor)
         else if tp1Hit and low <= tp2Price
-            recordResult(bankedR + rr2 * 0.5)
+            closedR    := bankedR + rr2 * 0.5
             tpHitEvent := true
             tradeDir   := 0
         else if high >= slPrice
-            recordResult(tp1Hit ? bankedR : -1.0)
+            closedR    := tp1Hit ? bankedR : -1.0
             slHitEvent := true
             tradeDir   := 0
 
-// New signals
+// New signals decide whether a trade opens/reverses this bar
 if buySignal
     if useOppositeAsSL
         if tradeDir == -1
-            recordResult(riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0)
-        openLongTrade()
+            closedR := riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0
+        openLong := true
     else
         if tradeDir == 0
-            openLongTrade()
+            openLong := true
 
 if sellSignal
     if useOppositeAsSL
         if tradeDir == 1
-            recordResult(riskUnit != 0 ? (close - entryPrice) / riskUnit : 0.0)
-        openShortTrade()
+            closedR := riskUnit != 0 ? (close - entryPrice) / riskUnit : 0.0
+        openShort := true
     else
         if tradeDir == 0
-            openShortTrade()
+            openShort := true
+
+// Record a finished trade's result into the running stats
+if not na(closedR)
+    totalSignals := totalSignals + 1
+    sumR := sumR + closedR
+    if closedR > 0
+        wins := wins + 1
+        winStreak := winStreak + 1
+        loseStreak := 0
+        bestWinStreak := math.max(bestWinStreak, winStreak)
+    else
+        losses := losses + 1
+        loseStreak := loseStreak + 1
+        winStreak := 0
+        worstLoseStreak := math.max(worstLoseStreak, loseStreak)
+
+// Open a new long trade
+if openLong
+    tradeDir   := 1
+    entryPrice := close
+    riskUnit   := atrVal * slAtrMult
+    slPrice    := useOppositeAsSL ? na : entryPrice - riskUnit
+    tp1Price   := entryPrice + riskUnit * rr1
+    tp2Price   := entryPrice + riskUnit * rr2
+    tp1Hit     := false
+    bankedR    := 0.0
+    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=neutralColor, style=line.style_dotted, width=1)
+    tp1Line   := line.new(bar_index, tp1Price, bar_index, tp1Price, color=bullColor, style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bullColor, style=line.style_solid, width=2)
+    slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
+    if showTradeLevels
+        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
+        tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bullColor)
+        tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bullColor)
+        if not useOppositeAsSL
+            slLbl := renewLabel(slLbl, bar_index, slPrice, "SL  " + str.tostring(slPrice, format.mintick), neutralColor)
+
+// Open a new short trade
+if openShort
+    tradeDir   := -1
+    entryPrice := close
+    riskUnit   := atrVal * slAtrMult
+    slPrice    := useOppositeAsSL ? na : entryPrice + riskUnit
+    tp1Price   := entryPrice - riskUnit * rr1
+    tp2Price   := entryPrice - riskUnit * rr2
+    tp1Hit     := false
+    bankedR    := 0.0
+    entryLine := line.new(bar_index, entryPrice, bar_index, entryPrice, color=neutralColor, style=line.style_dotted, width=1)
+    tp1Line   := line.new(bar_index, tp1Price, bar_index, tp1Price, color=bearColor, style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bearColor, style=line.style_solid, width=2)
+    slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
+    if showTradeLevels
+        entryLbl := renewLabel(entryLbl, bar_index, entryPrice, "ENTRY  " + str.tostring(entryPrice, format.mintick), neutralColor)
+        tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bearColor)
+        tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bearColor)
+        if not useOppositeAsSL
+            slLbl := renewLabel(slLbl, bar_index, slPrice, "SL  " + str.tostring(slPrice, format.mintick), neutralColor)
 
 // ============================================================================
 // PLOTS
@@ -260,7 +269,7 @@ dashPos = switch dashPosInput
 var table dash = table.new(dashPos, 2, 11, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
 
 if showDashboard and barstate.islast
-    winRate       = totalSignals > 0 ? (wins / totalSignals) * 100.0 : 0.0
+    winRate       = totalSignals > 0 ? (float(wins) / totalSignals) * 100.0 : 0.0
     avgR          = totalSignals > 0 ? sumR / totalSignals : 0.0
     currentDirTxt = tradeDir == 1 ? "LONG" : tradeDir == -1 ? "SHORT" : "FLAT"
     currentDirCol = tradeDir == 1 ? bullColor : tradeDir == -1 ? bearColor : neutralColor
