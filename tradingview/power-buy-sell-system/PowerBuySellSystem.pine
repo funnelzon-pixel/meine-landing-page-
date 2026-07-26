@@ -25,6 +25,13 @@ slAtrMult   = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.1, step=0.1,
 rr1         = input.float(1.5, "Take Profit 1 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 rr2         = input.float(3.0, "Take Profit 2 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 
+grpAdx = "ADX DI Filter (5m Safe Logic)"
+useAdxFilter      = input.bool(true, "Use ADX DI+/DI- Direction as Signal Filter", group=grpAdx)
+adxDiLen          = input.int(8, "DI Length", minval=1, group=grpAdx)
+adxSigLen         = input.int(10, "ADX Smoothing Length", minval=1, group=grpAdx)
+useDiSpreadFilter = input.bool(true, "Require Minimum DI Spread (noise filter)", group=grpAdx)
+minDiSpread       = input.float(3.0, "Minimum DI+/DI- Spread", minval=0.0, step=0.1, group=grpAdx)
+
 grpDisplay = "Display"
 showDashboard   = input.bool(true, "Show Dashboard", group=grpDisplay)
 dashPosInput    = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDisplay)
@@ -66,8 +73,35 @@ volaExpand = atrVal > atrAvg
 bullScore = (trendUp ? 30.0 : 0.0) + (close > emaTrend ? 10.0 : 0.0) + (emaSlopeUp ? 10.0 : 0.0) + ((rsiVal > 50 and rsiVal < rsiOB) ? 15.0 : 0.0) + (macdBull ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
 bearScore = (trendDown ? 30.0 : 0.0) + (close < emaTrend ? 10.0 : 0.0) + (emaSlopeDown ? 10.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 15.0 : 0.0) + (macdBear ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
 
-buySignal  = trendFlipUp and bullScore >= powerThresh
-sellSignal = trendFlipDown and bearScore >= powerThresh
+// ============================================================================
+// ADX DI+/DI- FILTER  (Wilder DMI, ported from "ADX 5m+ Safe" logic)
+// +DI crosses above -DI and stays above  -> bullish DI regime (long bias)
+// -DI crosses above +DI and stays above  -> bearish DI regime (short bias)
+// ============================================================================
+f_dirMovPBS(_len) =>
+    _up = ta.change(high)
+    _down = -ta.change(low)
+    _plusDM = na(_up) ? na : ((_up > _down and _up > 0) ? _up : 0)
+    _minusDM = na(_down) ? na : ((_down > _up and _down > 0) ? _down : 0)
+    _trRma = ta.rma(ta.tr(true), _len)
+    _plus = fixnan(100 * ta.rma(_plusDM, _len) / _trRma)
+    _minus = fixnan(100 * ta.rma(_minusDM, _len) / _trRma)
+    [_plus, _minus]
+
+f_adxPBS(_plus, _minus, _sigLen) =>
+    _sum = _plus + _minus
+    100 * ta.rma(math.abs(_plus - _minus) / (_sum == 0 ? 1 : _sum), _sigLen)
+
+[adxDiPlus, adxDiMinus] = f_dirMovPBS(adxDiLen)
+adxSigVal = f_adxPBS(adxDiPlus, adxDiMinus, adxSigLen)
+
+adxSpreadBull = adxDiPlus - adxDiMinus
+adxSpreadBear = adxDiMinus - adxDiPlus
+adxDiLongBias  = useDiSpreadFilter ? (adxDiPlus > adxDiMinus and adxSpreadBull >= minDiSpread) : adxDiPlus > adxDiMinus
+adxDiShortBias = useDiSpreadFilter ? (adxDiMinus > adxDiPlus and adxSpreadBear >= minDiSpread) : adxDiMinus > adxDiPlus
+
+buySignal  = trendFlipUp and bullScore >= powerThresh and (not useAdxFilter or adxDiLongBias)
+sellSignal = trendFlipDown and bearScore >= powerThresh and (not useAdxFilter or adxDiShortBias)
 
 // ============================================================================
 // TRADE STATE
@@ -266,7 +300,9 @@ dashPos = switch dashPosInput
     "Bottom Left"  => position.bottom_left
     => position.top_right
 
-var table dash = table.new(dashPos, 2, 11, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
+dashBg    = color.new(#000000, 0)
+dashLabel = color.new(#9598a1, 0)
+var table dash = table.new(dashPos, 2, 12, bgcolor=dashBg, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
 
 if showDashboard and barstate.islast
     winRate       = totalSignals > 0 ? (float(wins) / totalSignals) * 100.0 : 0.0
@@ -275,39 +311,44 @@ if showDashboard and barstate.islast
     currentDirCol = tradeDir == 1 ? bullColor : tradeDir == -1 ? bearColor : neutralColor
     activeScore   = tradeDir == 1 ? bullScore : tradeDir == -1 ? bearScore : math.max(bullScore, bearScore)
     openR         = tradeDir == 1 and riskUnit != 0 ? (close - entryPrice) / riskUnit : tradeDir == -1 and riskUnit != 0 ? (entryPrice - close) / riskUnit : 0.0
+    diTxt         = adxDiLongBias ? "LONG" : adxDiShortBias ? "SHORT" : "NEUTRAL"
+    diCol         = adxDiLongBias ? bullColor : adxDiShortBias ? bearColor : neutralColor
 
-    table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(#1e222d, 0), text_size=size.small)
     table.merge_cells(dash, 0, 0, 1, 0)
 
-    table.cell(dash, 0, 1, "Status", text_color=color.gray, text_halign=text.align_left, text_size=size.small)
-    table.cell(dash, 1, 1, currentDirTxt, text_color=currentDirCol, text_size=size.small)
+    table.cell(dash, 0, 1, "Status", text_color=dashLabel, bgcolor=dashBg, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, currentDirTxt, text_color=currentDirCol, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 2, "Power Score", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 2, str.tostring(activeScore, "#.#") + "%", text_color=currentDirCol, text_size=size.small)
+    table.cell(dash, 0, 2, "Power Score", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(activeScore, "#.#") + "%", text_color=currentDirCol, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 3, "Entry", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 3, tradeDir != 0 ? str.tostring(entryPrice, format.mintick) : "—", text_size=size.small)
+    table.cell(dash, 0, 3, "ADX DI Bias", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 3, diTxt, text_color=diCol, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 4, "Stop Loss", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 4, tradeDir == 0 ? "—" : (useOppositeAsSL ? "Opposite Signal" : str.tostring(slPrice, format.mintick)), text_size=size.small)
+    table.cell(dash, 0, 4, "Entry", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 4, tradeDir != 0 ? str.tostring(entryPrice, format.mintick) : "—", text_color=color.white, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 5, "Take Profit 1", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 5, tradeDir != 0 ? str.tostring(tp1Price, format.mintick) : "—", text_size=size.small)
+    table.cell(dash, 0, 5, "Stop Loss", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 5, tradeDir == 0 ? "—" : (useOppositeAsSL ? "Opposite Signal" : str.tostring(slPrice, format.mintick)), text_color=color.white, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 6, "Take Profit 2", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 6, tradeDir != 0 ? str.tostring(tp2Price, format.mintick) : "—", text_size=size.small)
+    table.cell(dash, 0, 6, "Take Profit 1", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 6, tradeDir != 0 ? str.tostring(tp1Price, format.mintick) : "—", text_color=color.white, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 7, "Open P/L (R)", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 7, tradeDir != 0 ? str.tostring(openR, "#.##") + "R" : "—", text_color=openR >= 0 ? bullColor : bearColor, text_size=size.small)
+    table.cell(dash, 0, 7, "Take Profit 2", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 7, tradeDir != 0 ? str.tostring(tp2Price, format.mintick) : "—", text_color=color.white, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 8, "Signals / Win Rate", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 8, str.tostring(totalSignals) + " / " + str.tostring(winRate, "#.#") + "%", text_size=size.small)
+    table.cell(dash, 0, 8, "Open P/L (R)", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 8, tradeDir != 0 ? str.tostring(openR, "#.##") + "R" : "—", text_color=openR >= 0 ? bullColor : bearColor, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 9, "Wins / Losses", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 9, str.tostring(wins) + " / " + str.tostring(losses), text_size=size.small)
+    table.cell(dash, 0, 9, "Signals / Win Rate", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 9, str.tostring(totalSignals) + " / " + str.tostring(winRate, "#.#") + "%", text_color=color.white, bgcolor=dashBg, text_size=size.small)
 
-    table.cell(dash, 0, 10, "Avg R / Best Streak", text_color=color.gray, text_size=size.small)
-    table.cell(dash, 1, 10, str.tostring(avgR, "#.##") + "R / " + str.tostring(bestWinStreak), text_size=size.small)
+    table.cell(dash, 0, 10, "Wins / Losses", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 10, str.tostring(wins) + " / " + str.tostring(losses), text_color=color.white, bgcolor=dashBg, text_size=size.small)
+
+    table.cell(dash, 0, 11, "Avg R / Best Streak", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 11, str.tostring(avgR, "#.##") + "R / " + str.tostring(bestWinStreak), text_color=color.white, bgcolor=dashBg, text_size=size.small)
 
 // ============================================================================
 // ALERTS
