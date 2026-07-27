@@ -21,23 +21,23 @@ powerThresh = input.int(60, "Minimum Power Score to Signal (0-100)", minval=0, m
 scoreMargin = input.int(8, "Minimum Score Margin vs. Opposite Side", minval=0, maxval=100, tooltip="Requires the winning side's score to beat the other side's score by at least this much, to filter out indecisive/transitional bars where both a bull and bear case look almost equally strong.", group=grpPower)
 
 grpRisk = "Risk Management"
-useOppositeAsSL = input.bool(false, "Use Opposite Signal as Stop Loss (always-in-market)", tooltip="OFF (recommended): fixed ATR stop with TP1/TP2 gives an asymmetric R:R, so the system can be profitable even below a 50% win rate. ON: stop-and-reverse has no fixed take-profit, so every trade is roughly symmetric and needs a win rate above 50% to be profitable - it is much more sensitive to choppy/whipsaw conditions.", group=grpRisk)
+useOppositeAsSL = input.bool(false, "Use Opposite Signal as Stop Loss (always-in-market)", tooltip="OFF (recommended): fixed stop with TP1/TP2 gives an asymmetric R:R, so the system can be profitable even below a 50% win rate. ON: stop-and-reverse has no fixed take-profit, so every trade is roughly symmetric and needs a win rate above 50% to be profitable - it is much more sensitive to choppy/whipsaw conditions.", group=grpRisk)
 slAtrMult   = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.1, step=0.1, group=grpRisk)
 rr1         = input.float(1.5, "Take Profit 1 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 rr2         = input.float(3.0, "Take Profit 2 (R Multiple)", minval=0.1, step=0.1, group=grpRisk)
 
-grpAdx = "ADX DI Filter (5m Safe Logic)"
+grpAdx = "ADX DI Engine (5m Safe Logic)"
 signalSource       = input.string("ADX DI Cross", "Signal Trigger", options=["ADX DI Cross", "SuperTrend Flip"], group=grpAdx)
 adxDiLen           = input.int(8, "DI Length", minval=1, group=grpAdx)
 adxSigLen          = input.int(10, "ADX Smoothing Length", minval=1, group=grpAdx)
 useDiSpreadFilter  = input.bool(true, "Reward Wider DI Spread in Power Score", group=grpAdx)
 minDiSpread        = input.float(3.0, "DI Spread for Full Score Credit", minval=0.0, step=0.1, group=grpAdx)
-requireAdxStrength = input.bool(true, "Require Minimum ADX Strength to Trade", tooltip="Blocks signals while the ADX value is below the threshold, i.e. while the market is choppy/ranging rather than trending. This is the single biggest lever against a low win rate on a DI-cross system.", group=grpAdx)
+requireAdxStrength = input.bool(true, "Require Minimum ADX Strength to Trade (hard filter)", tooltip="The one remaining hard pass/fail filter: blocks signals while ADX is below the threshold, i.e. while the market is choppy/ranging. Kept as a hard block deliberately - trading chop is a different problem than \"the confluence score is a bit low\", no amount of score elsewhere should override it.", group=grpAdx)
 adxMinStrength     = input.int(18, "Minimum ADX Strength", minval=1, group=grpAdx)
-requireAdxRising   = input.bool(false, "Require ADX Rising", tooltip="Blocks signals while ADX is falling over the last few bars. OFF by default: combined with the other filters this was blocking almost every signal, since ADX naturally wiggles bar-to-bar even inside a healthy trend. Turn on only if you still see too many signals after tuning the other filters.", group=grpAdx)
+requireAdxRising   = input.bool(false, "Also Require ADX Rising (hard filter)", tooltip="OFF by default. Blocks signals while ADX is falling over the last few bars. Adds another hard block on top of the ADX-strength one above, so only enable this if you still see too many signals after tuning everything else - stacking hard blocks is what caused the earlier near-zero-signal problem.", group=grpAdx)
 
-grpMtf = "Multi-Timeframe Filter"
-useMtfFilter = input.bool(true, "Require Higher-Timeframe Trend Alignment", tooltip="Only takes long signals when a higher timeframe is bullish (and shorts when it's bearish), to avoid fighting the dominant trend. Keep this timeframe reasonably close to your chart's timeframe - too high (e.g. 1h on a 1m chart) barely changes for hours and can silently block one whole direction for a long time.", group=grpMtf)
+grpMtf = "Multi-Timeframe Context"
+useMtfScore  = input.bool(true, "Reward Higher-Timeframe Trend Alignment in Score", tooltip="Adds score points when a higher timeframe agrees with the trade direction, instead of hard-blocking the opposite direction. This used to be a hard block; that silently locked out one whole direction for hours whenever the higher timeframe was set too slow relative to the chart.", group=grpMtf)
 mtfTimeframe = input.timeframe("15", "Higher Timeframe", group=grpMtf)
 mtfEmaLen    = input.int(50, "Higher-Timeframe EMA Length", minval=1, group=grpMtf)
 
@@ -45,25 +45,26 @@ grpCooldown = "Signal Cooldown"
 useCooldown  = input.bool(true, "Enable Cooldown Between Signals", tooltip="Blocks a new signal for a minimum number of bars after the previous one, to stop rapid-fire whipsaw entries right after a stop-out.", group=grpCooldown)
 cooldownBars = input.int(3, "Minimum Bars Between Signals", minval=0, group=grpCooldown)
 
-grpStoch = "Stoch RSI Confirmation"
-useStochConfirm  = input.bool(true, "Require Stoch RSI Extreme Before Signal", tooltip="Mirrors a discretionary pullback-timing technique: only take the DI-based long/short once Stoch RSI %D has recently been at an extreme (very oversold for longs, very overbought for shorts), instead of reacting to the DI cross alone.", group=grpStoch)
+grpStoch = "Stoch RSI Pullback Timing"
 stochRsiLen      = input.int(14, "Stoch RSI: RSI Length", minval=1, group=grpStoch)
 stochLen         = input.int(14, "Stoch RSI: Stochastic Length", minval=1, group=grpStoch)
 stochKSmooth     = input.int(3, "Stoch RSI: %K Smoothing", minval=1, group=grpStoch)
 stochDSmooth     = input.int(3, "Stoch RSI: %D Smoothing", minval=1, group=grpStoch)
 stochLowExtreme  = input.float(5.0, "Extreme Low Level (Long Confirmation)", minval=0, maxval=50, group=grpStoch)
 stochHighExtreme = input.float(95.0, "Extreme High Level (Short Confirmation)", minval=50, maxval=100, group=grpStoch)
-stochLookback    = input.int(10, "Confirmation Lookback (bars)", minval=0, tooltip="How many bars back the Stoch RSI extreme is still allowed to count as confirmation - it rarely lines up on the exact same bar as the DI cross.", group=grpStoch)
+stochLookback    = input.int(10, "Confirmation Lookback (bars)", minval=0, tooltip="How many bars back the Stoch RSI extreme is still allowed to count - it rarely lines up on the exact same bar as the DI cross.", group=grpStoch)
+useStochStrict   = input.bool(false, "Require Stoch RSI Extreme (hard filter, exact discretionary rule)", tooltip="OFF by default: a recent Stoch RSI extreme adds score points (soft) instead of being mandatory. Turn this ON to reproduce the exact discretionary rule 1:1 - a signal fires only when Stoch RSI %D was genuinely at an extreme first - but be aware this is a hard block stacked on top of every other filter and can cut signal frequency sharply.", group=grpStoch)
 
 grpStruct = "Structure-Based Stop"
 useStructureStop = input.bool(true, "Use Recent Swing High/Low as Stop Instead of Pure ATR", tooltip="Places the stop just beyond the most recent swing low/high instead of a fixed ATR distance, so it sits behind real market structure. Only affects the fixed-stop mode (Use Opposite Signal as Stop Loss = off).", group=grpStruct)
 structLookback   = input.int(20, "Structure Lookback (bars)", minval=1, group=grpStruct)
 structBufferAtr  = input.float(0.1, "Stop Buffer Beyond Structure (ATR Multiple)", minval=0.0, step=0.05, group=grpStruct)
+structMaxAtrMult = input.float(4.0, "Max Stop Distance (ATR Multiple)", minval=0.5, step=0.5, tooltip="Caps how far the structural stop is allowed to sit from entry, in case the recent swing high/low is unusually far away. Prevents one oversized-risk trade from distorting the whole system.", group=grpStruct)
 
 grpRound = "Round-Number Levels"
 useRoundLevels  = input.bool(true, "Show Nearest Round Level", group=grpRound)
 roundStep       = input.float(100, "Round Level Step", minval=1, tooltip="Germany40 defaults to 100-point steps - adjust to match the instrument you trade.", group=grpRound)
-avoidRoundZone  = input.bool(false, "Block Signals Right At a Round Level", tooltip="OFF by default - this blocks entries, so test it deliberately rather than stacking it on by default (stacking too many blocking filters is exactly what caused the earlier near-zero-signal problem).", group=grpRound)
+avoidRoundZone  = input.bool(false, "Block Signals Right At a Round Level (hard filter)", tooltip="OFF by default - this blocks entries, so test it deliberately rather than stacking it on by default.", group=grpRound)
 roundZoneBuffer = input.float(5, "Round Level Buffer (points)", minval=0, group=grpRound)
 
 grpDisplay = "Display"
@@ -120,52 +121,7 @@ adxDiLongBias  = adxDiPlus > adxDiMinus
 adxDiShortBias = adxDiMinus > adxDiPlus
 
 // ============================================================================
-// POWER SCORE  (0-100 confluence score: DI direction + trend + momentum + volume)
-// DI direction always earns some credit right at the cross (10 pts) and full
-// credit once the spread widens (20 pts), so an early cross is never blocked
-// by its own filter.
-// ============================================================================
-rsiVal = ta.rsi(close, rsiLen)
-[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSig)
-macdBull = macdHist > 0 and macdHist > macdHist[1]
-macdBear = macdHist < 0 and macdHist < macdHist[1]
-
-volAvg   = ta.sma(volume, volLen)
-volRatio = volAvg > 0 ? volume / volAvg : 1.0
-volExpand = volRatio >= 1.2
-
-atrAvg     = ta.sma(atrVal, volLen)
-volaExpand = atrVal > atrAvg
-
-diScoreBull = adxDiLongBias ? ((useDiSpreadFilter and adxSpreadBull < minDiSpread) ? 10.0 : 20.0) : 0.0
-diScoreBear = adxDiShortBias ? ((useDiSpreadFilter and adxSpreadBear < minDiSpread) ? 10.0 : 20.0) : 0.0
-
-bullScore = diScoreBull + (close > emaTrend ? 15.0 : 0.0) + (emaSlopeUp ? 10.0 : 0.0) + ((rsiVal > 50 and rsiVal < rsiOB) ? 15.0 : 0.0) + (macdBull ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 10.0 : 0.0)
-bearScore = diScoreBear + (close < emaTrend ? 15.0 : 0.0) + (emaSlopeDown ? 10.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 15.0 : 0.0) + (macdBear ? 20.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 10.0 : 0.0)
-
-// ============================================================================
-// MARKET REGIME  (avoid trading chop) + HIGHER-TIMEFRAME TREND ALIGNMENT
-// ============================================================================
-adxRising = adxSigVal > adxSigVal[3]
-adxRegimeOk = (not requireAdxStrength or adxSigVal >= adxMinStrength) and (not requireAdxRising or adxRising)
-
-mtfClose = request.security(syminfo.tickerid, mtfTimeframe, close, lookahead=barmerge.lookahead_off)
-mtfEma   = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, mtfEmaLen), lookahead=barmerge.lookahead_off)
-mtfTrendUp   = mtfClose > mtfEma
-mtfTrendDown = mtfClose < mtfEma
-mtfAlignLong  = not useMtfFilter or mtfTrendUp
-mtfAlignShort = not useMtfFilter or mtfTrendDown
-
-// ============================================================================
-// SIGNAL COOLDOWN  (blocks rapid re-entries right after the previous signal)
-// ============================================================================
-var int lastSignalBar = -100000000
-cooldownOk = not useCooldown or (bar_index - lastSignalBar) >= cooldownBars
-
-// ============================================================================
-// STOCH RSI CONFIRMATION  (pullback-timing filter: only trade the DI direction
-// once Stoch RSI %D has recently been at an extreme, matching a discretionary
-// "wait for the bounce/rollover to actually show up" entry technique)
+// STOCH RSI  (pullback-timing input to the Power Score)
 // ============================================================================
 stochRsiSrc = ta.rsi(close, stochRsiLen)
 stochRaw    = ta.stoch(stochRsiSrc, stochRsiSrc, stochRsiSrc, stochLen)
@@ -174,8 +130,14 @@ stochDVal   = ta.sma(stochKVal, stochDSmooth)
 
 stochWasExtremeLow  = ta.barssince(stochDVal <= stochLowExtreme) <= stochLookback
 stochWasExtremeHigh = ta.barssince(stochDVal >= stochHighExtreme) <= stochLookback
-stochConfirmLong  = not useStochConfirm or stochWasExtremeLow
-stochConfirmShort = not useStochConfirm or stochWasExtremeHigh
+
+// ============================================================================
+// MULTI-TIMEFRAME CONTEXT  (input to the Power Score, not a hard block)
+// ============================================================================
+mtfClose = request.security(syminfo.tickerid, mtfTimeframe, close, lookahead=barmerge.lookahead_off)
+mtfEma   = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, mtfEmaLen), lookahead=barmerge.lookahead_off)
+mtfTrendUp   = mtfClose > mtfEma
+mtfTrendDown = mtfClose < mtfEma
 
 // ============================================================================
 // ROUND-NUMBER LEVELS  (e.g. every 100 points on Germany40)
@@ -192,13 +154,64 @@ swingLow  = ta.lowest(low, structLookback)
 swingHigh = ta.highest(high, structLookback)
 
 // ============================================================================
+// POWER SCORE  (0-100 weighted confluence score)
+// Everything below is a *contribution*, not a pass/fail gate - nothing here
+// can single-handedly veto a signal. The only hard pass/fail filters are the
+// ADX regime block, the score margin, the cooldown, and (optionally) the
+// round-zone / strict-Stoch-RSI switches, all off or minimal by default.
+// ============================================================================
+rsiVal = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSig)
+macdBull = macdHist > 0 and macdHist > macdHist[1]
+macdBear = macdHist < 0 and macdHist < macdHist[1]
+
+volAvg   = ta.sma(volume, volLen)
+volRatio = volAvg > 0 ? volume / volAvg : 1.0
+volExpand = volRatio >= 1.2
+
+atrAvg     = ta.sma(atrVal, volLen)
+volaExpand = atrVal > atrAvg
+
+diScoreBull = adxDiLongBias ? ((useDiSpreadFilter and adxSpreadBull < minDiSpread) ? 10.0 : 20.0) : 0.0
+diScoreBear = adxDiShortBias ? ((useDiSpreadFilter and adxSpreadBear < minDiSpread) ? 10.0 : 20.0) : 0.0
+
+stochScoreBull = stochWasExtremeLow ? 15.0 : 0.0
+stochScoreBear = stochWasExtremeHigh ? 15.0 : 0.0
+
+mtfScoreBull = (useMtfScore and mtfTrendUp) ? 10.0 : 0.0
+mtfScoreBear = (useMtfScore and mtfTrendDown) ? 10.0 : 0.0
+
+// Weights: DI 20, Stoch RSI 15, MTF 10, EMA position 10, EMA slope 5,
+// RSI band 10, MACD 15, volume 10, volatility 5  -> sums to 100.
+bullScore = diScoreBull + stochScoreBull + mtfScoreBull + (close > emaTrend ? 10.0 : 0.0) + (emaSlopeUp ? 5.0 : 0.0) + ((rsiVal > 50 and rsiVal < rsiOB) ? 10.0 : 0.0) + (macdBull ? 15.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
+bearScore = diScoreBear + stochScoreBear + mtfScoreBear + (close < emaTrend ? 10.0 : 0.0) + (emaSlopeDown ? 5.0 : 0.0) + ((rsiVal < 50 and rsiVal > rsiOS) ? 10.0 : 0.0) + (macdBear ? 15.0 : 0.0) + (volExpand ? 10.0 : 0.0) + (volaExpand ? 5.0 : 0.0)
+
+// ============================================================================
+// MARKET REGIME  (the one hard chop-avoidance filter)
+// ============================================================================
+adxRising = adxSigVal > adxSigVal[3]
+adxRegimeOk = (not requireAdxStrength or adxSigVal >= adxMinStrength) and (not requireAdxRising or adxRising)
+
+// ============================================================================
+// SIGNAL COOLDOWN  (blocks rapid re-entries right after the previous signal)
+// ============================================================================
+var int lastSignalBar = -100000000
+cooldownOk = not useCooldown or (bar_index - lastSignalBar) >= cooldownBars
+
+// ============================================================================
+// STOCH RSI STRICT OVERRIDE  (off by default - see useStochStrict above)
+// ============================================================================
+stochConfirmLong  = not useStochStrict or stochWasExtremeLow
+stochConfirmShort = not useStochStrict or stochWasExtremeHigh
+
+// ============================================================================
 // SIGNAL TRIGGER
 // ============================================================================
 triggerUp   = signalSource == "ADX DI Cross" ? adxCrossUp : trendFlipUp
 triggerDown = signalSource == "ADX DI Cross" ? adxCrossDn : trendFlipDown
 
-buySignal  = triggerUp and bullScore >= powerThresh and (bullScore - bearScore) >= scoreMargin and mtfAlignLong and adxRegimeOk and cooldownOk and stochConfirmLong and roundZoneOk
-sellSignal = triggerDown and bearScore >= powerThresh and (bearScore - bullScore) >= scoreMargin and mtfAlignShort and adxRegimeOk and cooldownOk and stochConfirmShort and roundZoneOk
+buySignal  = triggerUp and bullScore >= powerThresh and (bullScore - bearScore) >= scoreMargin and adxRegimeOk and cooldownOk and stochConfirmLong and roundZoneOk
+sellSignal = triggerDown and bearScore >= powerThresh and (bearScore - bullScore) >= scoreMargin and adxRegimeOk and cooldownOk and stochConfirmShort and roundZoneOk
 
 if buySignal or sellSignal
     lastSignalBar := bar_index
@@ -304,8 +317,8 @@ if not useOppositeAsSL and tradeDir != 0
             closeTradeB := true
 
 // Once a Mode B trade closes, drop it back to flat and clear its ENTRY/TP/SL
-// labels immediately instead of leaving them stranded on the chart until the
-// next trade happens to open.
+// labels immediately instead of leaving them stranded on the chart in the
+// middle of later price action until the next trade happens to open.
 if closeTradeB
     tradeDir := 0
     if not na(entryLbl)
@@ -360,7 +373,8 @@ if openLong
     tradeDir   := 1
     entryPrice := close
     atrRiskUnit = atrVal * slAtrMult
-    structuralSL = swingLow - atrVal * structBufferAtr
+    maxDist      = atrVal * structMaxAtrMult
+    structuralSL = math.max(swingLow - atrVal * structBufferAtr, entryPrice - maxDist)
     slPrice    := useOppositeAsSL ? na : (useStructureStop ? structuralSL : entryPrice - atrRiskUnit)
     riskUnit   := useOppositeAsSL ? atrRiskUnit : math.max(entryPrice - slPrice, atrVal * 0.1)
     tp1Price   := entryPrice + riskUnit * rr1
@@ -372,7 +386,7 @@ if openLong
     tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bullColor, style=line.style_solid, width=2)
     slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
     if showTradeLevels
-        entryDiagTxt = "ENTRY  " + str.tostring(entryPrice, format.mintick) + "\nADX " + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓") + " | DI+" + str.tostring(adxDiPlus, "#.#") + "/-" + str.tostring(adxDiMinus, "#.#") + " | MTF " + (mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat")
+        entryDiagTxt = "ENTRY  " + str.tostring(entryPrice, format.mintick) + "\nADX " + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓") + " | DI+" + str.tostring(adxDiPlus, "#.#") + "/-" + str.tostring(adxDiMinus, "#.#") + " | MTF " + (mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat") + " | Stoch " + str.tostring(stochDVal, "#.#")
         entryLbl := renewLabel(entryLbl, bar_index, entryPrice, entryDiagTxt, neutralColor)
         tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bullColor)
         tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bullColor)
@@ -384,7 +398,8 @@ if openShort
     tradeDir   := -1
     entryPrice := close
     atrRiskUnit = atrVal * slAtrMult
-    structuralSL = swingHigh + atrVal * structBufferAtr
+    maxDist      = atrVal * structMaxAtrMult
+    structuralSL = math.min(swingHigh + atrVal * structBufferAtr, entryPrice + maxDist)
     slPrice    := useOppositeAsSL ? na : (useStructureStop ? structuralSL : entryPrice + atrRiskUnit)
     riskUnit   := useOppositeAsSL ? atrRiskUnit : math.max(slPrice - entryPrice, atrVal * 0.1)
     tp1Price   := entryPrice - riskUnit * rr1
@@ -396,7 +411,7 @@ if openShort
     tp2Line   := line.new(bar_index, tp2Price, bar_index, tp2Price, color=bearColor, style=line.style_solid, width=2)
     slLine    := useOppositeAsSL ? na : line.new(bar_index, slPrice, bar_index, slPrice, color=neutralColor, style=line.style_dashed, width=1)
     if showTradeLevels
-        entryDiagTxt = "ENTRY  " + str.tostring(entryPrice, format.mintick) + "\nADX " + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓") + " | DI+" + str.tostring(adxDiPlus, "#.#") + "/-" + str.tostring(adxDiMinus, "#.#") + " | MTF " + (mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat")
+        entryDiagTxt = "ENTRY  " + str.tostring(entryPrice, format.mintick) + "\nADX " + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓") + " | DI+" + str.tostring(adxDiPlus, "#.#") + "/-" + str.tostring(adxDiMinus, "#.#") + " | MTF " + (mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat") + " | Stoch " + str.tostring(stochDVal, "#.#")
         entryLbl := renewLabel(entryLbl, bar_index, entryPrice, entryDiagTxt, neutralColor)
         tp1Lbl   := renewLabel(tp1Lbl, bar_index, tp1Price, "TP1  " + str.tostring(tp1Price, format.mintick), bearColor)
         tp2Lbl   := renewLabel(tp2Lbl, bar_index, tp2Price, "TP2  " + str.tostring(tp2Price, format.mintick), bearColor)
@@ -444,7 +459,7 @@ if showDashboard and barstate.islast
     mtfTxt        = mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat"
     regimeTxt     = (adxRegimeOk ? "OK " : "CHOP ") + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓")
     regimeCol     = adxRegimeOk ? bullColor : bearColor
-    stochTxt      = str.tostring(stochDVal, "#.#") + (stochWasExtremeLow ? " (Long OK)" : stochWasExtremeHigh ? " (Short OK)" : "")
+    stochTxt      = str.tostring(stochDVal, "#.#") + (stochWasExtremeLow ? " (Long+)" : stochWasExtremeHigh ? " (Short+)" : "")
     stochCol      = stochWasExtremeLow ? bullColor : stochWasExtremeHigh ? bearColor : dashLabel
 
     table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(#1e222d, 0), text_size=size.small)
