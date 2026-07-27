@@ -45,6 +45,27 @@ grpCooldown = "Signal Cooldown"
 useCooldown  = input.bool(true, "Enable Cooldown Between Signals", tooltip="Blocks a new signal for a minimum number of bars after the previous one, to stop rapid-fire whipsaw entries right after a stop-out.", group=grpCooldown)
 cooldownBars = input.int(3, "Minimum Bars Between Signals", minval=0, group=grpCooldown)
 
+grpStoch = "Stoch RSI Confirmation"
+useStochConfirm  = input.bool(true, "Require Stoch RSI Extreme Before Signal", tooltip="Mirrors a discretionary pullback-timing technique: only take the DI-based long/short once Stoch RSI %D has recently been at an extreme (very oversold for longs, very overbought for shorts), instead of reacting to the DI cross alone.", group=grpStoch)
+stochRsiLen      = input.int(14, "Stoch RSI: RSI Length", minval=1, group=grpStoch)
+stochLen         = input.int(14, "Stoch RSI: Stochastic Length", minval=1, group=grpStoch)
+stochKSmooth     = input.int(3, "Stoch RSI: %K Smoothing", minval=1, group=grpStoch)
+stochDSmooth     = input.int(3, "Stoch RSI: %D Smoothing", minval=1, group=grpStoch)
+stochLowExtreme  = input.float(5.0, "Extreme Low Level (Long Confirmation)", minval=0, maxval=50, group=grpStoch)
+stochHighExtreme = input.float(95.0, "Extreme High Level (Short Confirmation)", minval=50, maxval=100, group=grpStoch)
+stochLookback    = input.int(10, "Confirmation Lookback (bars)", minval=0, tooltip="How many bars back the Stoch RSI extreme is still allowed to count as confirmation - it rarely lines up on the exact same bar as the DI cross.", group=grpStoch)
+
+grpStruct = "Structure-Based Stop"
+useStructureStop = input.bool(true, "Use Recent Swing High/Low as Stop Instead of Pure ATR", tooltip="Places the stop just beyond the most recent swing low/high instead of a fixed ATR distance, so it sits behind real market structure. Only affects the fixed-stop mode (Use Opposite Signal as Stop Loss = off).", group=grpStruct)
+structLookback   = input.int(20, "Structure Lookback (bars)", minval=1, group=grpStruct)
+structBufferAtr  = input.float(0.1, "Stop Buffer Beyond Structure (ATR Multiple)", minval=0.0, step=0.05, group=grpStruct)
+
+grpRound = "Round-Number Levels"
+useRoundLevels  = input.bool(true, "Show Nearest Round Level", group=grpRound)
+roundStep       = input.float(100, "Round Level Step", minval=1, tooltip="Germany40 defaults to 100-point steps - adjust to match the instrument you trade.", group=grpRound)
+avoidRoundZone  = input.bool(false, "Block Signals Right At a Round Level", tooltip="OFF by default - this blocks entries, so test it deliberately rather than stacking it on by default (stacking too many blocking filters is exactly what caused the earlier near-zero-signal problem).", group=grpRound)
+roundZoneBuffer = input.float(5, "Round Level Buffer (points)", minval=0, group=grpRound)
+
 grpDisplay = "Display"
 showDashboard   = input.bool(true, "Show Dashboard", group=grpDisplay)
 dashPosInput    = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDisplay)
@@ -142,13 +163,42 @@ var int lastSignalBar = -100000000
 cooldownOk = not useCooldown or (bar_index - lastSignalBar) >= cooldownBars
 
 // ============================================================================
+// STOCH RSI CONFIRMATION  (pullback-timing filter: only trade the DI direction
+// once Stoch RSI %D has recently been at an extreme, matching a discretionary
+// "wait for the bounce/rollover to actually show up" entry technique)
+// ============================================================================
+stochRsiSrc = ta.rsi(close, stochRsiLen)
+stochRaw    = ta.stoch(stochRsiSrc, stochRsiSrc, stochRsiSrc, stochLen)
+stochKVal   = ta.sma(stochRaw, stochKSmooth)
+stochDVal   = ta.sma(stochKVal, stochDSmooth)
+
+stochWasExtremeLow  = ta.barssince(stochDVal <= stochLowExtreme) <= stochLookback
+stochWasExtremeHigh = ta.barssince(stochDVal >= stochHighExtreme) <= stochLookback
+stochConfirmLong  = not useStochConfirm or stochWasExtremeLow
+stochConfirmShort = not useStochConfirm or stochWasExtremeHigh
+
+// ============================================================================
+// ROUND-NUMBER LEVELS  (e.g. every 100 points on Germany40)
+// ============================================================================
+nearestRoundLevel = math.round(close / roundStep) * roundStep
+distToRoundLevel  = math.abs(close - nearestRoundLevel)
+inRoundZone       = distToRoundLevel <= roundZoneBuffer
+roundZoneOk       = not avoidRoundZone or not inRoundZone
+
+// ============================================================================
+// MARKET STRUCTURE  (recent swing high/low, used for the structure-based stop)
+// ============================================================================
+swingLow  = ta.lowest(low, structLookback)
+swingHigh = ta.highest(high, structLookback)
+
+// ============================================================================
 // SIGNAL TRIGGER
 // ============================================================================
 triggerUp   = signalSource == "ADX DI Cross" ? adxCrossUp : trendFlipUp
 triggerDown = signalSource == "ADX DI Cross" ? adxCrossDn : trendFlipDown
 
-buySignal  = triggerUp and bullScore >= powerThresh and (bullScore - bearScore) >= scoreMargin and mtfAlignLong and adxRegimeOk and cooldownOk
-sellSignal = triggerDown and bearScore >= powerThresh and (bearScore - bullScore) >= scoreMargin and mtfAlignShort and adxRegimeOk and cooldownOk
+buySignal  = triggerUp and bullScore >= powerThresh and (bullScore - bearScore) >= scoreMargin and mtfAlignLong and adxRegimeOk and cooldownOk and stochConfirmLong and roundZoneOk
+sellSignal = triggerDown and bearScore >= powerThresh and (bearScore - bullScore) >= scoreMargin and mtfAlignShort and adxRegimeOk and cooldownOk and stochConfirmShort and roundZoneOk
 
 if buySignal or sellSignal
     lastSignalBar := bar_index
@@ -309,8 +359,10 @@ if not na(closedR)
 if openLong
     tradeDir   := 1
     entryPrice := close
-    riskUnit   := atrVal * slAtrMult
-    slPrice    := useOppositeAsSL ? na : entryPrice - riskUnit
+    atrRiskUnit = atrVal * slAtrMult
+    structuralSL = swingLow - atrVal * structBufferAtr
+    slPrice    := useOppositeAsSL ? na : (useStructureStop ? structuralSL : entryPrice - atrRiskUnit)
+    riskUnit   := useOppositeAsSL ? atrRiskUnit : math.max(entryPrice - slPrice, atrVal * 0.1)
     tp1Price   := entryPrice + riskUnit * rr1
     tp2Price   := entryPrice + riskUnit * rr2
     tp1Hit     := false
@@ -331,8 +383,10 @@ if openLong
 if openShort
     tradeDir   := -1
     entryPrice := close
-    riskUnit   := atrVal * slAtrMult
-    slPrice    := useOppositeAsSL ? na : entryPrice + riskUnit
+    atrRiskUnit = atrVal * slAtrMult
+    structuralSL = swingHigh + atrVal * structBufferAtr
+    slPrice    := useOppositeAsSL ? na : (useStructureStop ? structuralSL : entryPrice + atrRiskUnit)
+    riskUnit   := useOppositeAsSL ? atrRiskUnit : math.max(slPrice - entryPrice, atrVal * 0.1)
     tp1Price   := entryPrice - riskUnit * rr1
     tp2Price   := entryPrice - riskUnit * rr2
     tp1Hit     := false
@@ -355,6 +409,7 @@ if openShort
 plot(trendUp ? st : na, title="Uptrend Support", color=bullColor, style=plot.style_linebr, linewidth=2)
 plot(trendDown ? st : na, title="Downtrend Resistance", color=bearColor, style=plot.style_linebr, linewidth=2)
 plot(emaTrend, title="Trend EMA", color=color.new(color.yellow, 40), linewidth=1)
+plot(useRoundLevels ? nearestRoundLevel : na, title="Nearest Round Level", color=color.new(color.yellow, 60), style=plot.style_circles, linewidth=2)
 
 bgcolor(trendUp ? color.new(bullColor, 92) : trendDown ? color.new(bearColor, 92) : na, title="Trend Background")
 barcolor(showBarColors ? (trendUp ? bullColor : trendDown ? bearColor : na) : na)
@@ -374,7 +429,7 @@ dashPos = switch dashPosInput
 
 dashBg    = color.new(#000000, 0)
 dashLabel = color.new(#9598a1, 0)
-var table dash = table.new(dashPos, 2, 13, bgcolor=dashBg, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
+var table dash = table.new(dashPos, 2, 14, bgcolor=dashBg, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 60))
 
 if showDashboard and barstate.islast
     winRate       = totalSignals > 0 ? (float(wins) / totalSignals) * 100.0 : 0.0
@@ -389,6 +444,8 @@ if showDashboard and barstate.islast
     mtfTxt        = mtfTrendUp ? "Bull" : mtfTrendDown ? "Bear" : "Flat"
     regimeTxt     = (adxRegimeOk ? "OK " : "CHOP ") + str.tostring(adxSigVal, "#.#") + (adxRising ? "↑" : "↓")
     regimeCol     = adxRegimeOk ? bullColor : bearColor
+    stochTxt      = str.tostring(stochDVal, "#.#") + (stochWasExtremeLow ? " (Long OK)" : stochWasExtremeHigh ? " (Short OK)" : "")
+    stochCol      = stochWasExtremeLow ? bullColor : stochWasExtremeHigh ? bearColor : dashLabel
 
     table.cell(dash, 0, 0, "⚡ POWER BUY & SELL SYSTEM", text_color=color.white, bgcolor=color.new(#1e222d, 0), text_size=size.small)
     table.merge_cells(dash, 0, 0, 1, 0)
@@ -428,6 +485,9 @@ if showDashboard and barstate.islast
 
     table.cell(dash, 0, 12, "HTF Trend / Regime", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
     table.cell(dash, 1, 12, mtfTxt + " / " + regimeTxt, text_color=regimeCol, bgcolor=dashBg, text_size=size.small)
+
+    table.cell(dash, 0, 13, "Stoch RSI D", text_color=dashLabel, bgcolor=dashBg, text_size=size.small)
+    table.cell(dash, 1, 13, stochTxt, text_color=stochCol, bgcolor=dashBg, text_size=size.small)
 
 // ============================================================================
 // ALERTS
